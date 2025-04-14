@@ -252,7 +252,7 @@
 
                     <!-- Temperature Readings -->
                     <% if device['basicInfo']['t'] && device['basicInfo']['t'].any? %>
-                        <div class="temperature-readings">
+                        <div class="battery-info temperature-readings">
                             <% device['basicInfo']['t'].each_with_index do |temp, index| %>
                                 <div class="temperature-sensor">
                                     <div>Temp <%= index + 1 %></div>
@@ -264,7 +264,7 @@
 
                     <!-- Protection Status -->
                     <% if device['basicInfo']['prot'] %>
-                        <div class="protection-status">
+                        <div class="battery-info protection-status">
                             <h3 style="color: aliceblue; margin-top: 0;">Protection Status</h3>
                             <% device['basicInfo']['prot'].each do |key, value| %>
                                 <div class="protection-item">
@@ -277,7 +277,7 @@
 
                     <!-- Port Status -->
                     <% if device['basicInfo']['ports'] %>
-                        <div class="protection-status">
+                        <div class="battery-info protection-status">
                             <h3 style="color: aliceblue; margin-top: 0;">Port Status</h3>
                             <div class="protection-item">
                                 <span class="status-indicator <%= device['basicInfo']['ports']['chg'] ? 'status-ok' : 'status-error' %>"></span>
@@ -325,14 +325,30 @@
             }
         }
 
-        function calculateTimeRemaining(capacity, current, isCharging) {
+        function calculateTimeRemaining(remainingCapacity, current, soc) {
             if (current === 0) return null;
             
-            const hours = Math.abs(capacity / current);
-            return {
-                hours: hours,
-                isCharging: isCharging
-            };
+            const isCharging = current > 0;
+            
+            if (isCharging) {
+                // Calculate nominal capacity based on remaining capacity and SOC percentage
+                const nominalCapacity = Math.round((remainingCapacity * 100) / soc);
+                // Calculate how much capacity is left to charge
+                const capacityToCharge = nominalCapacity - remainingCapacity;
+                // Calculate hours to full charge
+                const hours = Math.abs(capacityToCharge / current);
+                return {
+                    hours: hours,
+                    isCharging: true
+                };
+            } else {
+                // Discharging - use remaining capacity
+                const hours = Math.abs(remainingCapacity / current);
+                return {
+                    hours: hours,
+                    isCharging: false
+                };
+            }
         }
 
         function updateDeviceData(device) {
@@ -352,7 +368,7 @@
                 const timeInfo = calculateTimeRemaining(
                     device.basicInfo.cap,
                     device.basicInfo.i,
-                    device.basicInfo.ports && device.basicInfo.ports.chg
+                    device.basicInfo.soc
                 );
                 
                 const timeInfoElement = document.getElementById(`${deviceName}_time_info`);
