@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BMS Dashboard</title>
+    <style>
+        body {
+            background: linear-gradient(45deg, #15222e, #0066ff);
+            height: 100vh;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 20px;
+        }
+        .wrapper {
+            display: table;
+            margin: 0 auto;
+            background: rgba(21, 34, 46, 0.25);
+            padding: 35px 40px 40px;
+            border-radius: 6px;
+            box-shadow: 0 0 1px 0 rgba(255, 255, 255, 0.32), 0 1px 9px -1px #15222e;
+            width: 200px;
+        }
+        .gauge {
+            font-family: Arial, Helvetica, sans-serif;
+            background: #e7e7e7;
+            box-shadow: 0 0 0 6px rgba(255, 255, 255, 0.09), 0 0 35px 5px rgba(255, 255, 255, 0.29);
+            width: 200px;
+            height: 100px;
+            border-radius: 100px 100px 0 0;
+            position: relative;
+            overflow: hidden;
+            -webkit-transform-style: flat;
+            -webkit-transform: translateZ(0px);
+        }
+        .gauge-center {
+            position: absolute;
+            width: 60%;
+            height: 60%;
+            background: #15222E;
+            border-radius: 100px 100px 0 0;
+            bottom: 0;
+            right: 21%;
+            text-align: center;
+            padding-top: 10px;
+            color: #fff;
+        }
+        .needle {
+            width: 78px;
+            height: 7px;
+            background: #15222E;
+            position: absolute;
+            bottom: 4px;
+            left: 20px;
+            transform-origin: 100% 4px;
+            transition: transform 0.3s ease-in-out;
+        }
+        .slice-colors .st {
+            position: absolute;
+            bottom: 0;
+            width: 60px;
+            height: 0;
+            border-bottom: 80px solid #000;
+            border-left: 12px solid transparent;
+            border-right: 12px solid transparent;
+        }
+        .slice-colors .st.slice-item:nth-child(1) {
+            border-bottom-color: #00ffff;
+            left: -2px;
+        }
+        .slice-colors .st.slice-item:nth-child(2) {
+            border-bottom-color: #1e90ff;
+            transform: rotate(135deg);
+            transform-origin: right;
+            top: 12px;
+            left: -65px;
+        }
+        .slice-colors .st.slice-item:nth-child(3) {
+            border-bottom-color: #0066ff;
+            transform: rotate(179deg);
+            transform-origin: right;
+            top: -20px;
+            left: -62px;
+            border-bottom-width: 90px;
+            border-left-width: 45px;
+            border-right-width: 45px;
+            width: 18px;
+        }
+        .slice-colors .st.slice-item:nth-child(4) {
+            border-bottom-color: #0000ff;
+            transform: rotate(219deg);
+            transform-origin: right;
+            top: -23px;
+            left: 43px;
+        }
+        .slice-colors .st.slice-item:nth-child(5) {
+            border-bottom-color: #000080;
+            transform: rotate(240deg);
+            transform-origin: right;
+            right: 52px;
+        }
+        .battery {
+            width: 50px;
+            height: 100px;
+            border: 3px solid #333;
+            border-radius: 8px;
+            position: relative;
+            background-color: rgba(255, 255, 255, 0.08);
+            box-shadow: 0 0 5px rgba(0,0,0,0.2);
+            margin: auto;
+        }
+        .battery::before {
+            content: '';
+            position: absolute;
+            top: -10px;
+            left: 15px;
+            width: 20px;
+            height: 10px;
+            background-color: #333;
+            border-radius: 4px;
+        }
+        .battery-level {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            z-index: -10;
+            width: 100%;
+            transition: height 0.4s ease-out;
+            height: calc(var(--level));
+            background: linear-gradient(to top, var(--battery-color) 0%, var(--battery-color) 100%);
+        }
+        .battery-info {
+            font-family: Arial;
+            color: aliceblue;
+            text-align: center;
+            margin: 10px 0;
+        }
+        .charging-indicator {
+            position: absolute;
+            top: -20px;
+            right: 10px;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #ffff00;
+            box-shadow: 0 0 10px #ffff00;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.2); opacity: 0.7; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .uptime {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+            color: aliceblue;
+            font-family: Arial;
+            font-size: 0.9em;
+        }
+        .status-indicator {
+            width: 15px;
+            height: 15px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 5px;
+        }
+        .status-ok {
+            background-color: #00ff00;
+        }
+        .status-warning {
+            background-color: #ffff00;
+        }
+        .status-error {
+            background-color: #ff0000;
+        }
+        .protection-status {
+            margin-top: 10px;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 5px;
+        }
+        .protection-item {
+            display: flex;
+            align-items: center;
+            margin: 5px 0;
+        }
+        .temperature-readings {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 10px;
+        }
+        .temperature-sensor {
+            background: rgba(0, 0, 0, 0.2);
+            padding: 10px;
+            border-radius: 5px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="uptime">
+        Last Update: <span id="last-update">Never</span>
+    </div>
+
+    <% if has_data? %>
+        <% $bms_data.first['devices'].each do |device| %>
+            <div class="wrapper">
+                <h1 style="font-family: Arial; color: aliceblue; text-align: center;"><%= device['name'] %></h1>
+                
+                <% if device['basicInfo'] %>
+                    <!-- Voltage and Current Gauge -->
+                    <div class="gauge">
+                        <div class="slice-colors">
+                            <div class="st slice-item"></div>
+                            <div class="st slice-item"></div>
+                            <div class="st slice-item"></div>
+                            <div class="st slice-item"></div>
+                            <div class="st slice-item"></div>
+                        </div>
+                        <div class="needle" id="<%= device['name'] %>_needle"></div>
+                        <div class="gauge-center">
+                            <div id="<%= device['name'] %>_current"><%= device['basicInfo']['i'] %> A</div>
+                            <div id="<%= device['name'] %>_power" style="font-size: 0.8em"><%= device['basicInfo']['p'] %> W</div>
+                        </div>
+                    </div>
+                    <div class="battery-info">Voltage: <span id="<%= device['name'] %>_voltage"><%= device['basicInfo']['v'] %></span>V</div>
+
+                    <!-- Battery Status -->
+                    <div class="battery">
+                        <% if device['basicInfo']['ports'] && device['basicInfo']['ports']['chg'] %>
+                            <div class="charging-indicator"></div>
+                        <% end %>
+                        <div class="battery-info">
+                            <div class="battery-level" id="<%= device['name'] %>_battery_level" style="--level: <%= device['basicInfo']['soc'] %>%;"></div>
+                            <div><span id="<%= device['name'] %>_soc"><%= device['basicInfo']['soc'] %></span>%</div>
+                        </div>
+                    </div>
+                    <div class="battery-info">
+                        <div>Capacity: <span id="<%= device['name'] %>_capacity"><%= device['basicInfo']['cap'] %></span>Ah</div>
+                        <div id="<%= device['name'] %>_time_info" class="time-info"></div>
+                    </div>
+
+                    <!-- Temperature Readings -->
+                    <% if device['basicInfo']['t'] && device['basicInfo']['t'].any? %>
+                        <div class="temperature-readings">
+                            <% device['basicInfo']['t'].each_with_index do |temp, index| %>
+                                <div class="temperature-sensor">
+                                    <div>Temp <%= index + 1 %></div>
+                                    <div><%= (temp - 273.15).round(1) %>°C</div>
+                                </div>
+                            <% end %>
+                        </div>
+                    <% end %>
+
+                    <!-- Protection Status -->
+                    <% if device['basicInfo']['prot'] %>
+                        <div class="protection-status">
+                            <h3 style="color: aliceblue; margin-top: 0;">Protection Status</h3>
+                            <% device['basicInfo']['prot'].each do |key, value| %>
+                                <div class="protection-item">
+                                    <span class="status-indicator <%= value ? 'status-error' : 'status-ok' %>"></span>
+                                    <span style="color: aliceblue;"><%= key.upcase %></span>
+                                </div>
+                            <% end %>
+                        </div>
+                    <% end %>
+
+                    <!-- Port Status -->
+                    <% if device['basicInfo']['ports'] %>
+                        <div class="protection-status">
+                            <h3 style="color: aliceblue; margin-top: 0;">Port Status</h3>
+                            <div class="protection-item">
+                                <span class="status-indicator <%= device['basicInfo']['ports']['chg'] ? 'status-ok' : 'status-error' %>"></span>
+                                <span style="color: aliceblue;">CHARGING</span>
+                            </div>
+                            <div class="protection-item">
+                                <span class="status-indicator <%= device['basicInfo']['ports']['dis'] ? 'status-ok' : 'status-error' %>"></span>
+                                <span style="color: aliceblue;">DISCHARGING</span>
+                            </div>
+                        </div>
+                    <% end %>
+                <% end %>
+            </div>
+        <% end %>
+    <% else %>
+        <div style="color: aliceblue; text-align: center; width: 100%;">
+            <h1>No BMS data available</h1>
+            <p>Waiting for MQTT data...</p>
+        </div>
+    <% end %>
+
+    <script>
+        function getBatteryColor(soc) {
+            if (soc >= 80) return '#00ffff';  // Electric blue for high charge
+            if (soc >= 50) return '#1e90ff';  // Dodger blue for medium-high
+            if (soc >= 30) return '#ffa500';  // Orange for medium-low
+            if (soc >= 15) return '#ff4500';  // Orange-red for low
+            return '#ff0000';  // Red for critical
+        }
+
+        function updateGauge(deviceName, current) {
+            const maxCurrent = 100; // Adjust this value based on your expected maximum current
+            const angle = (Math.max(0, Math.min(Math.abs(current), maxCurrent)) / maxCurrent) * 180;
+            document.getElementById(`${deviceName}_needle`).style.transform = `rotate(${angle}deg)`;
+        }
+
+        function formatTime(hours) {
+            if (hours >= 1) {
+                const wholeHours = Math.floor(hours);
+                const minutes = Math.round((hours - wholeHours) * 60);
+                return `${wholeHours}h ${minutes}m`;
+            } else {
+                const minutes = Math.round(hours * 60);
+                return `${minutes}m`;
+            }
+        }
+
+        function calculateTimeRemaining(capacity, current, isCharging) {
+            if (current === 0) return null;
+            
+            const hours = Math.abs(capacity / current);
+            return {
+                hours: hours,
+                isCharging: isCharging
+            };
+        }
+
+        function updateDeviceData(device) {
+            if (device.basicInfo) {
+                const deviceName = device.name;
+                
+                // Update current and power
+                document.getElementById(`${deviceName}_current`).textContent = `${device.basicInfo.i} A`;
+                document.getElementById(`${deviceName}_power`).textContent = `${device.basicInfo.p} W`;
+                document.getElementById(`${deviceName}_voltage`).textContent = device.basicInfo.v;
+                
+                // Update battery status
+                document.getElementById(`${deviceName}_soc`).textContent = device.basicInfo.soc;
+                document.getElementById(`${deviceName}_capacity`).textContent = device.basicInfo.cap;
+                
+                // Calculate and display time remaining
+                const timeInfo = calculateTimeRemaining(
+                    device.basicInfo.cap,
+                    device.basicInfo.i,
+                    device.basicInfo.ports && device.basicInfo.ports.chg
+                );
+                
+                const timeInfoElement = document.getElementById(`${deviceName}_time_info`);
+                if (timeInfo) {
+                    if (timeInfo.isCharging) {
+                        timeInfoElement.innerHTML = `Time to full: <span style="color: #ffff00">${formatTime(timeInfo.hours)}</span>`;
+                    } else {
+                        timeInfoElement.innerHTML = `Time to empty: <span style="color: #ff4500">${formatTime(timeInfo.hours)}</span>`;
+                    }
+                } else {
+                    timeInfoElement.innerHTML = 'Time to empty/full: N/A';
+                }
+                
+                // Update battery level and color
+                const batteryLevel = document.getElementById(`${deviceName}_battery_level`);
+                batteryLevel.style.setProperty('--level', `${device.basicInfo.soc}%`);
+                batteryLevel.style.setProperty('--battery-color', getBatteryColor(device.basicInfo.soc));
+                
+                // Update charging indicator
+                const batteryContainer = document.querySelector(`#${deviceName}_battery_level`).closest('.battery');
+                let chargingIndicator = batteryContainer.querySelector('.charging-indicator');
+                
+                if (device.basicInfo.ports && device.basicInfo.ports.chg) {
+                    if (!chargingIndicator) {
+                        chargingIndicator = document.createElement('div');
+                        chargingIndicator.className = 'charging-indicator';
+                        batteryContainer.appendChild(chargingIndicator);
+                    }
+                } else if (chargingIndicator) {
+                    chargingIndicator.remove();
+                }
+                
+                // Update temperature readings
+                if (device.basicInfo.t && device.basicInfo.t.length > 0) {
+                    const tempContainer = document.querySelector(`#${deviceName}_soc`).closest('.wrapper').querySelector('.temperature-readings');
+                    if (tempContainer) {
+                        tempContainer.innerHTML = device.basicInfo.t.map((temp, index) => `
+                            <div class="temperature-sensor">
+                                <div>Temp ${index + 1}</div>
+                                <div>${(temp - 273.15).toFixed(1)}°C</div>
+                            </div>
+                        `).join('');
+                    }
+                }
+                
+                // Update protection status
+                if (device.basicInfo.prot) {
+                    const protContainer = document.querySelector(`#${deviceName}_soc`).closest('.wrapper').querySelector('.protection-status');
+                    if (protContainer) {
+                        protContainer.innerHTML = `
+                            <h3 style="color: aliceblue; margin-top: 0;">Protection Status</h3>
+                            ${Object.entries(device.basicInfo.prot).map(([key, value]) => `
+                                <div class="protection-item">
+                                    <span class="status-indicator ${value ? 'status-error' : 'status-ok'}"></span>
+                                    <span style="color: aliceblue;">${key.toUpperCase()}</span>
+                                </div>
+                            `).join('')}
+                        `;
+                    }
+                }
+                
+                // Update port status
+                if (device.basicInfo.ports) {
+                    const portsContainer = document.querySelector(`#${deviceName}_soc`).closest('.wrapper').querySelectorAll('.protection-status')[1];
+                    if (portsContainer) {
+                        portsContainer.innerHTML = `
+                            <h3 style="color: aliceblue; margin-top: 0;">Port Status</h3>
+                            <div class="protection-item">
+                                <span class="status-indicator ${device.basicInfo.ports.chg ? 'status-ok' : 'status-error'}"></span>
+                                <span style="color: aliceblue;">CHARGING</span>
+                            </div>
+                            <div class="protection-item">
+                                <span class="status-indicator ${device.basicInfo.ports.dis ? 'status-ok' : 'status-error'}"></span>
+                                <span style="color: aliceblue;">DISCHARGING</span>
+                            </div>
+                        `;
+                    }
+                }
+                
+                // Update gauge needle
+                updateGauge(deviceName, device.basicInfo.i);
+                
+                // Update last update time
+                document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+            }
+        }
+
+        // Update all values when new data arrives
+        const eventSource = new EventSource('/data');
+        eventSource.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            data.devices.forEach(updateDeviceData);
+        };
+
+        // Handle connection errors
+        eventSource.onerror = function(error) {
+            console.error('EventSource failed:', error);
+            // Attempt to reconnect after 5 seconds
+            setTimeout(() => {
+                eventSource.close();
+                eventSource = new EventSource('/data');
+            }, 5000);
+        };
+    </script>
+</body>
+</html> 

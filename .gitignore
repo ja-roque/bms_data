@@ -1,6 +1,8 @@
 # Environment variables
 .env
 .env.*
+.bundle/
+.vendor/
 
 # Ruby specific
 *.gem
@@ -14,6 +16,8 @@
 /test/tmp/
 /test/version_tmp/
 /tmp/
+/vendor/
+/bundle/
 
 # Specific to RubyMotion:
 .dat*
