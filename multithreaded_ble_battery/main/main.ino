@@ -66,6 +66,13 @@
 // Add this in the CONFIGURATION section
 #define USE_STATIC_IP false  // Set to true to use static IP, false for DHCP
 
+// MQTT Resilience Settings
+#define MQTT_RECONNECT_DELAY_MIN 5000      // Start with 5 second delay
+#define MQTT_RECONNECT_DELAY_MAX 60000     // Max 1 minute delay (60000ms)
+#define MQTT_BUFFER_SIZE 10                // Number of messages to buffer
+#define MQTT_WATCHDOG_TIMEOUT 600000       // 10 minutes without connection triggers restart
+#define MQTT_PING_INTERVAL 30000           // Send ping every 30 seconds
+
 // ================ INCLUDE LIBRARIES ================
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -215,6 +222,19 @@ uint8_t packetLength[2] = {0, 0};
 unsigned long lastSuccessfulMqttPublish = 0;
 unsigned long lastMqttFailureCheck = 0;
 
+// MQTT Message Buffer
+struct MqttMessage {
+    String payload;
+    unsigned long timestamp;
+    bool valid;
+};
+
+MqttMessage mqttBuffer[MQTT_BUFFER_SIZE];
+int mqttBufferIndex = 0;
+unsigned long lastMqttPing = 0;
+unsigned long lastConnectAttempt = 0;
+int connectFailCount = 0;
+
 // Function Prototypes
 void bleTask(void *pvParameters);
 void mqttTask(void *pvParameters);
@@ -236,6 +256,8 @@ void connectMqtt();
 bool checkBit(byte data, int pos);
 bool hasProtectionOrPortStatus(BleDeviceInfo &device);
 void addProtectionAndPortStatus(JsonObject &basicInfo, BleDeviceInfo &device);
+void bufferMessage(const String& message);
+void sendBufferedMessages();
 
 // ================ BLE CALLBACKS ================
 // BLE Advertisement Callback
@@ -628,70 +650,55 @@ bool sendBleCommand(BleDeviceInfo &device, uint8_t command) {
 // ================ MQTT TASK ================
 void mqttTask(void *pvParameters) {
     addStatusMessage("MQTT task started");
-    
-    // Configure MQTT client
     mqttClient.begin(MQTT_BROKER, MQTT_PORT, wifiClient);
     
     unsigned long lastHeapCheck = 0;
-    lastSuccessfulMqttPublish = millis();
-    lastMqttFailureCheck = millis();
     
     while (true) {
-        // Check heap size periodically
-        if (millis() - lastHeapCheck >= HEAP_CHECK_INTERVAL) {
+        // Current time
+        unsigned long now = millis();
+        
+        // Check heap size
+        if (now - lastHeapCheck >= HEAP_CHECK_INTERVAL) {
             uint32_t freeHeap = ESP.getFreeHeap();
-            if (SERIAL_DEBUG) {
-                Serial.print("Free heap: ");
-                Serial.println(freeHeap);
-            }
-            
             if (freeHeap < MIN_HEAP_SIZE) {
-                addStatusMessage("Low heap detected (" + String(freeHeap) + " bytes). Restarting...", true);
-                Serial.println("Low heap detected. Restarting ESP32...");
-                delay(1000);  // Give time for the message to be sent
                 ESP.restart();
             }
-            lastHeapCheck = millis();
-        }
-
-        // Check MQTT failure status periodically
-        if (millis() - lastMqttFailureCheck >= MQTT_FAILURE_CHECK_INTERVAL) {
-            if (millis() - lastSuccessfulMqttPublish >= MQTT_FAILURE_TIMEOUT) {
-                addStatusMessage("MQTT publishing failed for 5 minutes. Restarting...", true);
-                Serial.println("MQTT failure timeout. Restarting ESP32...");
-                delay(1000);  // Give time for the message to be sent
-                ESP.restart();
-            }
-            lastMqttFailureCheck = millis();
+            lastHeapCheck = now;
         }
         
-        // Check WiFi status
+        // Check WiFi status and reconnect if needed
         if (!wifiConnected || WiFi.status() != WL_CONNECTED) {
-            Serial.println("\nWiFi disconnected in MQTT task, attempting reconnection...");
-            
-            // Force disconnect and reconnect
-            WiFi.disconnect(true, true);
+            setupWiFi();
             delay(1000);
-            
-            setupWiFi();  // Use the same robust connection function
-            
-            // If still not connected, wait before next attempt
-            if (!wifiConnected) {
-                delay(5000);  // Wait 5 seconds before next attempt
-                continue;  // Skip the rest of the loop
-            }
+            continue;
         }
         
-        // Maintain MQTT connection
+        // MQTT Connection management
         if (!mqttClient.connected()) {
+            if (now - lastSuccessfulMqttPublish >= MQTT_WATCHDOG_TIMEOUT) {
+                Serial.println("MQTT watchdog timeout, restarting...");
+                ESP.restart();
+            }
             connectMqtt();
+        } else {
+            // Send periodic ping to keep connection alive
+            if (now - lastMqttPing >= MQTT_PING_INTERVAL) {
+                if (mqttClient.publish(MQTT_TOPIC "/ping", "ping")) {
+                    lastMqttPing = now;
+                }
+            }
+            
+            // Process MQTT messages
+            mqttClient.loop();
+            
+            // Try to send any buffered messages
+            sendBufferedMessages();
         }
-        mqttClient.loop();
         
-        // Check if new data is available and send it to MQTT
+        // Process new data if available
         if (xSemaphoreTake(dataMutex, (TickType_t)10) == pdTRUE) {
             if (newDataAvailable) {
-                // Send data for each device with updated information
                 for (int i = 0; i < 2; i++) {
                     if (bleDevices[i].enabled && (bleDevices[i].packetsReceived & 0x01)) {
                         sendDataToMqtt(bleDevices[i]);
@@ -702,79 +709,120 @@ void mqttTask(void *pvParameters) {
             xSemaphoreGive(dataMutex);
         }
         
-        // Small delay to avoid consuming all CPU
-        delay(50);
+        delay(100); // Prevent watchdog triggers
     }
 }
 
 // Connect to MQTT broker
-void connectMqtt() {
-    Serial.print("Connecting to MQTT broker...");
+bool connectMqtt() {
+    if (!wifiConnected || WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected, can't establish MQTT connection");
+        return false;
+    }
+
+    // Calculate backoff delay
+    unsigned long currentDelay = min(
+        MQTT_RECONNECT_DELAY_MIN * (1 << min(connectFailCount, 6)), // Exponential backoff
+        MQTT_RECONNECT_DELAY_MAX
+    );
+    
+    // Check if we should attempt reconnection
+    if (millis() - lastConnectAttempt < currentDelay) {
+        return false;
+    }
+    
+    Serial.print("Attempting MQTT connection... ");
+    lastConnectAttempt = millis();
     
     // Create a unique client ID
     String clientId = "ESP32-BMS-";
     clientId += String(random(0xffff), HEX);
     
-    while (!mqttClient.connect(clientId.c_str(), MQTT_USERNAME, MQTT_PASSWORD)) {
-        Serial.print(".");
-        Serial.println(mqttClient.lastError());
-        Serial.println(mqttClient.returnCode());
-        Serial.print(".");
-        delay(1000);
-    }
+    // Set MQTT client options
+    mqttClient.setKeepAlive(60); // Keepalive timeout in seconds
+    mqttClient.setConnectionTimeout(10); // Connection timeout in seconds
     
-    Serial.println(" connected!");
-    addStatusMessage("Connected to MQTT broker");
+    if (mqttClient.connect(clientId.c_str(), MQTT_USERNAME, MQTT_PASSWORD)) {
+        Serial.println("connected!");
+        connectFailCount = 0;
+        lastSuccessfulMqttPublish = millis(); // Reset the watchdog
+        
+        // After successful connection, try to send buffered messages
+        sendBufferedMessages();
+        return true;
+    } else {
+        connectFailCount++;
+        Serial.print("failed, rc=");
+        Serial.print(mqttClient.lastError());
+        Serial.print(" try again in ");
+        Serial.print(currentDelay / 1000);
+        Serial.println(" seconds");
+        return false;
+    }
 }
 
 // Send data to MQTT broker
 void sendDataToMqtt(BleDeviceInfo &device) {
-    if (!wifiConnected || !mqttClient.connected()) {
+    if (!wifiConnected) {
+        Serial.println("WiFi not connected, buffering message");
+        bufferMessage(createMqttPayload(device));
         return;
     }
     
-    // Create JSON document with reduced size
-    StaticJsonDocument<1024> doc;  // Reduced from 2048
+    String payload = createMqttPayload(device);
     
-    // Add system info (only essential fields)
+    // Try to publish immediately
+    if (mqttClient.connected() && mqttClient.publish(MQTT_TOPIC, payload)) {
+        if (SERIAL_DEBUG) {
+            Serial.println("MQTT message published successfully");
+        }
+        lastSuccessfulMqttPublish = millis();
+    } else {
+        // If publish fails, buffer the message
+        Serial.println("MQTT publish failed, buffering message");
+        bufferMessage(payload);
+    }
+}
+
+// Helper function to create MQTT payload
+String createMqttPayload(BleDeviceInfo &device) {
+    StaticJsonDocument<1024> doc;
+    
+    // Add system info
     doc["system"]["uptime"] = getFormattedTime(millis());
     doc["system"]["ip"] = ipAddressToString(WiFi.localIP());
     doc["system"]["freeHeap"] = ESP.getFreeHeap();
     
-    // Create an array for all devices
+    // Create devices array and add device data
     JsonArray devicesArray = doc.createNestedArray("devices");
     
     // Add data for each enabled device
-    for (int i = 0; i < 2; i++) {
-        if (!bleDevices[i].enabled) continue;
+    JsonObject deviceObj = devicesArray.createNestedObject();
+    deviceObj["name"] = device.name;
+    deviceObj["connected"] = device.connected;
+    
+    // Add basic info if available
+    if (device.packetsReceived & 0x01) {
+        JsonObject basicInfo = deviceObj.createNestedObject("basicInfo");
+        basicInfo["v"] = (float)device.basicInfo.Volts / 100.0;  // voltage
+        basicInfo["i"] = (float)device.basicInfo.Amps / 100.0;  // current
+        basicInfo["p"] = (float)device.basicInfo.Watts;   // power
+        basicInfo["soc"] = device.basicInfo.RSOC;
+        basicInfo["cap"] = (float)device.basicInfo.CapacityRemainAh / 100.0;  // capacity
+        basicInfo["ncells"] = device.basicInfo.NumberOfCells;
+        basicInfo["ntemp"] = device.basicInfo.NumberOfTempSensors;
         
-        JsonObject deviceObj = devicesArray.createNestedObject();
-        deviceObj["name"] = bleDevices[i].name;
-        deviceObj["connected"] = bleDevices[i].connected;
+        // Add temperature readings (only if sensors exist)
+        if (device.basicInfo.NumberOfTempSensors > 0) {
+            JsonArray temps = basicInfo.createNestedArray("t");
+            for (int j = 0; j < device.basicInfo.NumberOfTempSensors && j < 4; j++) {
+                temps.add((float)device.basicInfo.TemperatureReadings[j] / 10.0);
+            }
+        }
         
-        // Add basic info if available
-        if (bleDevices[i].packetsReceived & 0x01) {
-            JsonObject basicInfo = deviceObj.createNestedObject("basicInfo");
-            basicInfo["v"] = (float)bleDevices[i].basicInfo.Volts / 100.0;  // voltage
-            basicInfo["i"] = (float)bleDevices[i].basicInfo.Amps / 100.0;  // current
-            basicInfo["p"] = (float)bleDevices[i].basicInfo.Watts;   // power
-            basicInfo["soc"] = bleDevices[i].basicInfo.RSOC;
-            basicInfo["cap"] = (float)bleDevices[i].basicInfo.CapacityRemainAh / 100.0;  // capacity
-            basicInfo["ncells"] = bleDevices[i].basicInfo.NumberOfCells;
-            basicInfo["ntemp"] = bleDevices[i].basicInfo.NumberOfTempSensors;
-            
-            // Add temperature readings (only if sensors exist)
-            if (bleDevices[i].basicInfo.NumberOfTempSensors > 0) {
-                JsonArray temps = basicInfo.createNestedArray("t");
-                for (int j = 0; j < bleDevices[i].basicInfo.NumberOfTempSensors && j < 4; j++) {
-                    temps.add((float)bleDevices[i].basicInfo.TemperatureReadings[j] / 10.0);
-                }
-            }
-            
-            // Add protection status and ports status
-            if (hasProtectionOrPortStatus(bleDevices[i])) {
-                addProtectionAndPortStatus(basicInfo, bleDevices[i]);
-            }
+        // Add protection status and ports status
+        if (hasProtectionOrPortStatus(device)) {
+            addProtectionAndPortStatus(basicInfo, device);
         }
     }
     
@@ -782,37 +830,7 @@ void sendDataToMqtt(BleDeviceInfo &device) {
     String jsonString;
     serializeJson(doc, jsonString);
     
-    // Publish to MQTT with retry logic
-    const int maxRetries = 3;
-    const int retryDelay = 1000; // 1 second delay between retries
-    bool publishSuccess = false;
-    
-    for (int retry = 0; retry < maxRetries && !publishSuccess; retry++) {
-        if (retry > 0) {
-            delay(retryDelay);
-            if (SERIAL_DEBUG) {
-                Serial.printf("Retrying MQTT publish (attempt %d of %d)...\n", retry + 1, maxRetries);
-            }
-        }
-        
-        if (mqttClient.publish(MQTT_TOPIC, jsonString)) {
-            if (SERIAL_DEBUG) {
-                Serial.println("MQTT message published successfully");
-            }
-            addStatusMessage("Data sent to MQTT successfully");
-            lastSuccessfulMqttPublish = millis();
-            publishSuccess = true;
-        } else {
-            if (SERIAL_DEBUG) {
-                Serial.printf("Failed to publish MQTT message (attempt %d)\n", retry + 1);
-            }
-        }
-    }
-    
-    if (!publishSuccess) {
-        Serial.println("Failed to publish MQTT message after all retries");
-        addStatusMessage("Failed to publish MQTT message", true);
-    }
+    return jsonString;
 }
 
 // Helper function to check if device has any protection or port status to report
@@ -1346,4 +1364,32 @@ void setupWiFi() {
     
     Serial.println("\nWiFi connection failed after all attempts");
     addStatusMessage("WiFi connection failed. Will retry in the MQTT task.", true);
+}
+
+void bufferMessage(const String& message) {
+    mqttBuffer[mqttBufferIndex].payload = message;
+    mqttBuffer[mqttBufferIndex].timestamp = millis();
+    mqttBuffer[mqttBufferIndex].valid = true;
+    mqttBufferIndex = (mqttBufferIndex + 1) % MQTT_BUFFER_SIZE;
+}
+
+void sendBufferedMessages() {
+    for (int i = 0; i < MQTT_BUFFER_SIZE; i++) {
+        if (mqttBuffer[i].valid) {
+            // Only send messages that are less than 1 hour old
+            if (millis() - mqttBuffer[i].timestamp < 3600000) {
+                if (mqttClient.publish(MQTT_TOPIC, mqttBuffer[i].payload)) {
+                    mqttBuffer[i].valid = false; // Clear after successful send
+                    lastSuccessfulMqttPublish = millis();
+                    delay(100); // Small delay between messages
+                } else {
+                    // If sending fails, break and try again later
+                    break;
+                }
+            } else {
+                // Discard old messages
+                mqttBuffer[i].valid = false;
+            }
+        }
+    }
 } 

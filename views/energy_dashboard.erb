@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Battery Energy Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+  <style>
+    .container {
+      width: 95%;
+      margin: 20px auto;
+    }
+    .device-section {
+      background: #f8f9fa;
+      border-radius: 8px;
+      padding: 15px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .chart-container {
+      height: 300px;
+      margin-bottom: 20px;
+      padding: 10px;
+      background: white;
+      border-radius: 4px;
+    }
+    h2 {
+      color: #2c3e50;
+      margin-bottom: 20px;
+    }
+    .controls {
+      margin-bottom: 20px;
+      padding: 15px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    select, button {
+      padding: 8px;
+      border-radius: 4px;
+      border: 1px solid #ddd;
+      margin-right: 10px;
+    }
+    button {
+      background: #2c3e50;
+      color: white;
+      border: none;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #34495e;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Battery Energy Dashboard</h1>
+    
+    <div class="controls">
+      <label for="timeRange">Time Range:</label>
+      <select id="timeRange" onchange="updateData()">
+        <option value="24">Last 24 Hours</option>
+        <option value="48">Last 48 Hours</option>
+        <option value="168">Last Week</option>
+        <option value="720">Last Month</option>
+        <option value="all">All Data</option>
+      </select>
+      <button onclick="updateData()">Refresh</button>
+    </div>
+
+    <div id="devicesContainer"></div>
+  </div>
+
+  <script>
+    let charts = {};
+
+    function createChart(ctx, datasets, title, yAxisLabel, hasSecondY = false) {
+      // Add fill and line connection settings to each dataset
+      datasets.forEach(dataset => {
+        dataset.fill = true;
+        dataset.backgroundColor = dataset.borderColor.replace('rgb', 'rgba').replace(')', ', 0.1)');
+        dataset.spanGaps = true; // This will connect lines across null values
+        dataset.tension = 0.1; // Slight curve for smoother lines
+      });
+
+      const config = {
+        type: 'line',
+        data: { datasets },
+        options: {
+          animation: false,
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            title: { 
+              display: true, 
+              text: title 
+            }
+          },
+          scales: {
+            x: {
+              type: 'time',
+              time: {
+                displayFormats: {
+                  hour: 'HH:mm',
+                  day: 'MMM d'
+                }
+              }
+            },
+            y: {
+              title: {
+                display: true,
+                text: yAxisLabel
+              }
+            }
+          }
+        }
+      };
+
+      if (hasSecondY) {
+        config.options.scales['y1'] = {
+          position: 'right',
+          title: {
+            display: true,
+            text: 'Current (A)'
+          },
+          grid: {
+            drawOnChartArea: false
+          }
+        };
+      }
+
+      return new Chart(ctx, config);
+    }
+
+    function createDeviceSection(deviceName) {
+      const section = document.createElement('div');
+      section.className = 'device-section';
+      section.innerHTML = `
+        <h2>${deviceName}</h2>
+        <div class="chart-container"><canvas id="powerCurrent-${deviceName}"></canvas></div>
+        <div class="chart-container"><canvas id="voltage-${deviceName}"></canvas></div>
+        <div class="chart-container"><canvas id="temp-${deviceName}"></canvas></div>
+        <div class="chart-container"><canvas id="soc-${deviceName}"></canvas></div>
+      `;
+      return section;
+    }
+
+    function initializeCharts(deviceData) {
+      const deviceName = deviceData.device_name;
+      
+      // Power & Current
+      const powerCurrentCtx = document.getElementById(`powerCurrent-${deviceName}`);
+      const powerCurrentChart = createChart(
+        powerCurrentCtx,
+        [
+          {
+            label: 'Power (W)',
+            data: deviceData.data_points.map(d => ({
+              x: new Date(d.timestamp),
+              y: d.power
+            })),
+            borderColor: 'rgb(75, 192, 192)',
+            yAxisID: 'y'
+          },
+          {
+            label: 'Current (A)',
+            data: deviceData.data_points.map(d => ({
+              x: new Date(d.timestamp),
+              y: d.current
+            })),
+            borderColor: 'rgb(255, 99, 132)',
+            yAxisID: 'y1'
+          }
+        ],
+        'Power & Current',
+        'Power (W)',
+        true
+      );
+
+      // Voltage
+      const voltageCtx = document.getElementById(`voltage-${deviceName}`);
+      const voltageChart = createChart(
+        voltageCtx,
+        [{
+          label: 'Voltage (V)',
+          data: deviceData.data_points.map(d => ({
+            x: new Date(d.timestamp),
+            y: d.voltage
+          })),
+          borderColor: 'rgb(54, 162, 235)'
+        }],
+        'Voltage',
+        'Voltage (V)'
+      );
+
+      // Temperature
+      const tempCtx = document.getElementById(`temp-${deviceName}`);
+      const tempChart = createChart(
+        tempCtx,
+        [{
+          label: 'Temperature (°C)',
+          data: deviceData.data_points.map(d => ({
+            x: new Date(d.timestamp),
+            y: d.temp1
+          })),
+          borderColor: 'rgb(255, 159, 64)'
+        }],
+        'Temperature',
+        'Temperature (°C)'
+      );
+
+      // SoC
+      const socCtx = document.getElementById(`soc-${deviceName}`);
+      const socChart = createChart(
+        socCtx,
+        [{
+          label: 'State of Charge (%)',
+          data: deviceData.data_points.map(d => ({
+            x: new Date(d.timestamp),
+            y: d.soc
+          })),
+          borderColor: 'rgb(153, 102, 255)'
+        }],
+        'State of Charge',
+        'SoC (%)'
+      );
+
+      return {
+        powerCurrent: powerCurrentChart,
+        voltage: voltageChart,
+        temp: tempChart,
+        soc: socChart
+      };
+    }
+
+    async function updateData() {
+      try {
+        const hours = document.getElementById('timeRange').value;
+        let url = '/api/energy';
+        
+        if (hours !== 'all') {
+          const end = new Date();
+          const start = new Date(end - hours * 60 * 60 * 1000);
+          url += `?start=${start.toISOString()}&end=${end.toISOString()}`;
+        }
+
+        const response = await fetch(url);
+        const data = await response.json();
+
+        // Clean up old charts
+        Object.values(charts).forEach(deviceCharts => {
+          Object.values(deviceCharts).forEach(chart => {
+            if (chart) chart.destroy();
+          });
+        });
+        charts = {};
+
+        // Clear container
+        const container = document.getElementById('devicesContainer');
+        container.innerHTML = '';
+
+        // Create new charts
+        data.devices.forEach(deviceData => {
+          const section = createDeviceSection(deviceData.device_name);
+          container.appendChild(section);
+          charts[deviceData.device_name] = initializeCharts(deviceData);
+        });
+      } catch (error) {
+        console.error('Error updating data:', error);
+      }
+    }
+
+    // Initial load
+    updateData();
+
+    // Refresh every minute
+    setInterval(updateData, 60000);
+  </script>
+</body>
+</html>

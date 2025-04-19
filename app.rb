@@ -146,6 +146,71 @@ class MQTTServer < Sinatra::Base
   def has_data?
     !$bms_data.empty?
   end
+
+  get '/api/energy' do
+    content_type :json
+    
+    # Get optional time range parameters (default to last 24 hours)
+    start_time = params[:start] ? Time.parse(params[:start]) : (Time.now - 86400)
+    end_time = params[:end] ? Time.parse(params[:end]) : Time.now
+    
+    # Get all unique device names
+    devices = self.class.db[:bms_readings]
+      .select(:device_name)
+      .distinct
+      .order(:device_name)
+      .map(:device_name)
+
+    # Get data for all devices
+    device_data = devices.map do |device_name|
+      # Use AT TIME ZONE to convert timestamps in the database query
+      readings = self.class.db[:bms_readings]
+        .where(device_name: device_name)
+        .where(Sequel.lit('timestamp BETWEEN ? AND ?', start_time, end_time))
+        .order(:timestamp)
+        .select(
+          Sequel.lit("timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'America/Tegucigalpa' as timestamp"),
+          :voltage,
+          :current,
+          :power,
+          :soc,
+          Sequel.lit("temperature[1] as temp1")
+        )
+        .all
+
+      # Process readings
+      processed_data = readings.map do |reading|
+        {
+          # Format the timestamp that's already in Honduras time
+          timestamp: reading[:timestamp].strftime('%Y-%m-%dT%H:%M:%S%:z'),
+          voltage: reading[:voltage],
+          current: reading[:current],
+          power: reading[:power],
+          soc: reading[:soc],
+          temp1: reading[:temp1] ? (reading[:temp1] - 273.15).round(2) : nil
+        }
+      end
+
+      {
+        device_name: device_name,
+        data_points: processed_data
+      }
+    end
+
+    # Convert start and end times to Honduras time
+    honduras_start = start_time.getlocal('-06:00')
+    honduras_end = end_time.getlocal('-06:00')
+
+    {
+      start_time: honduras_start.iso8601,
+      end_time: honduras_end.iso8601,
+      devices: device_data
+    }.to_json
+  end
+
+  get '/energy' do
+    erb :energy_dashboard
+  end
 end
 
 # Run the server if this file is executed directly
